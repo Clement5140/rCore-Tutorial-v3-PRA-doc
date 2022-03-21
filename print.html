@@ -415,7 +415,117 @@ memory_set.frame_que.push(ppn);
 <p>由于建立映射时页表可能需要新的物理页面，所以我们先检查一下物理页面是否还有剩余，若没有则提前换出一个，保证页表可以正常工作。</p>
 <p>到这里缺页异常就处理完毕了，中断返回后重新执行该指令时可以正常执行。</p>
 <div id="chapter_begin" style="break-before: page; page-break-before: always;"></div><h1 id="页面置换算法的实现"><a class="header" href="#页面置换算法的实现">页面置换算法的实现</a></h1>
+<h2 id="局部页面置换算法-1"><a class="header" href="#局部页面置换算法-1">局部页面置换算法</a></h2>
+<h3 id="fifo页面置换算法"><a class="header" href="#fifo页面置换算法">FIFO页面置换算法</a></h3>
+<p>FIFO页面置换算法实现非常简单，只需要给每一个用户程序记录一个物理页面队列即可，在用户访问申请的内存并触发缺页异常分配物理页面时将对应PPN加入队列的队尾，在需要换出物理页面时将队首的物理页面换出即可。</p>
 <div id="chapter_begin" style="break-before: page; page-break-before: always;"></div><h1 id="用户态程序测试"><a class="header" href="#用户态程序测试">用户态程序测试</a></h1>
+<p>主要使用<code>mmap</code>和<code>munmap</code>两个系统调用进行测试。</p>
+<p>目前使用<code>ch4</code>中的测例进行测试，结果如下：</p>
+<p>首先可以看到操作系统启动后可以使用的物理页面数量为454：</p>
+<div align=center>
+<p><img src="assets/test/1.png" alt="plic_cpu" /></p>
+</div>
+<p>对于<code>test2_mmap0</code>，将其中len设置得较大，使得其分配的内存大于操作系统可以使用得总的物理页面内存，就可以触发物理页面的换入和换出：</p>
+<pre><pre class="playground"><code class="language-rust">#[no_mangle]
+fn main() -&gt; i32 {
+    let start: usize = 0x10000000;
+    let len: usize = 4096 * 100;
+    let prot: usize = 3;
+    assert_eq!(0, mmap(start, len, prot));
+    for i in start..(start + len) {
+        let addr: *mut u8 = i as *mut u8;
+        unsafe {
+            *addr = i as u8;
+        }
+    }
+    for i in start..(start + len) {
+        let addr: *mut u8 = i as *mut u8;
+        unsafe {
+            assert_eq!(*addr, i as u8);
+        }
+    }
+    println!(&quot;Test 04_1 OK!&quot;);
+    0
+}
+</code></pre></pre>
+<p>将其设置为<code>4096 * 100</code>，即需要100个物理页面，此时操作系统可用的物理页面足够，只触发<code>StorePageFault</code>并通过测试：</p>
+<div align=center>
+<p><img src="assets/test/2.png" alt="plic_cpu" /></p>
+</div>
+<p>将其设置为<code>4096 * 800</code>，即需要800个物理页面，此时操作系统可用的物理页面不足，需要换入和换出物理页面，会触发<code>StorePageFault</code>和<code>LoadPageFault</code>，并通过测试：</p>
+<div align=center>
+<p><img src="assets/test/3.png" alt="plic_cpu" /></p>
+</div>
+<p>对于<code>test2_mmap1</code>，程序分配了只读的一个物理页面的内存后，尝试修改内存：</p>
+<pre><pre class="playground"><code class="language-rust">#[no_mangle]
+fn main() -&gt; i32 {
+    let start: usize = 0x10000000;
+    let len: usize = 4096;
+    let prot: usize = 1;
+    assert_eq!(0, mmap(start, len, prot));
+    let addr: *mut u8 = start as *mut u8;
+    unsafe {
+        *addr = start as u8;
+    }
+    println!(&quot;Should cause error, Test 04_2 fail!&quot;);
+    0
+}
+</code></pre></pre>
+<p>结果如下，先触发缺页异常分配一个物理页面，然后同一条指令再次触发缺页异常，被判断为修改不可写的物理页面结束进程:</p>
+<div align=center>
+<p><img src="assets/test/4.png" alt="plic_cpu" /></p>
+</div>
+<p>对于<code>test2_mmap2</code>，程序分配了只写的一个物理页面的内存后，尝试访问内存：</p>
+<pre><pre class="playground"><code class="language-rust">#[no_mangle]
+fn main() -&gt; i32 {
+    let start: usize = 0x10000000;
+    let len: usize = 4096;
+    let prot: usize = 2;
+    assert_eq!(0, mmap(start, len, prot));
+    let addr: *mut u8 = start as *mut u8;
+    unsafe {
+        // *addr = start as u8; // can't write, R == 0 &amp;&amp; W == 1 is illegal in riscv
+        assert!(*addr != 0);
+    }
+    println!(&quot;Should cause error, Test 04_2 fail!&quot;);
+    0
+}
+</code></pre></pre>
+<p>结果如下，先触发缺页异常分配一个物理页面，然后同一条指令再次触发缺页异常，被判断为读取不可读的物理页面结束进程:</p>
+<div align=center>
+<p><img src="assets/test/5.png" alt="plic_cpu" /></p>
+</div>
+<p>对于<code>test2_unmap</code>，其用来测试<code>mmap</code>和<code>munmap</code>的正确性，也可以测试缺页异常处理的正确性：</p>
+<pre><pre class="playground"><code class="language-rust">#[no_mangle]
+fn main() -&gt; i32 {
+    let start: usize = 0x10000000;
+    let len: usize = 4096;
+    let prot: usize = 3;
+    assert_eq!(0, mmap(start, len, prot));
+    assert_eq!(mmap(start + len, len * 2, prot), 0);
+    assert_eq!(munmap(start, len), 0);
+    assert_eq!(mmap(start - len, len + 1, prot), 0);
+    // println!(&quot;~~~~~~&quot;);
+    for i in (start - len)..(start + len * 3) {
+        let addr: *mut u8 = i as *mut u8;
+        unsafe {
+            *addr = i as u8;
+        }
+    }
+    for i in (start - len)..(start + len * 3) {
+        let addr: *mut u8 = i as *mut u8;
+        unsafe {
+            assert_eq!(*addr, i as u8);
+        }
+    }
+    println!(&quot;Test 04_5 ummap OK!&quot;);
+    0
+}
+</code></pre></pre>
+<p>结果如下，触发四次缺页异常并分配物理页面通过测试：</p>
+<div align=center>
+<p><img src="assets/test/6.png" alt="plic_cpu" /></p>
+</div>
 <div id="chapter_begin" style="break-before: page; page-break-before: always;"></div><h1 id="代码树"><a class="header" href="#代码树">代码树</a></h1>
 <pre><code class="language-tree">.
 ├── bootloader
