@@ -166,7 +166,7 @@
                 <div id="content" class="content">
                     <main>
                         <h1 id="用户态程序测试"><a class="header" href="#用户态程序测试">用户态程序测试</a></h1>
-<p>主要使用<code>mmap</code>和<code>munmap</code>两个系统调用进行测试。</p>
+<p>主要使用<code>mmap</code>和<code>munmap</code>两个系统调用分配内存后进行不同的测试。</p>
 <h2 id="初步测试"><a class="header" href="#初步测试">初步测试</a></h2>
 <p>初步测试使用<code>ch4</code>中的测例进行测试，测试算法为 <code>FIFO</code> ，目的为检验页面置换机制的正确性，结果如下：</p>
 <p>首先可以看到操作系统启动后可以使用的物理页面数量为454：</p>
@@ -275,6 +275,7 @@ fn main() -&gt; i32 {
 <p><img src="assets/test/6.png" alt="plic_cpu" /></p>
 </div>
 <h2 id="综合测试结果"><a class="header" href="#综合测试结果">综合测试结果</a></h2>
+<h2 id="综合测例"><a class="header" href="#综合测例">综合测例</a></h2>
 <p>综合测试共七个测例，分别对每个算法进行测试，目的为检验算法正确性以及测试各个算法的效率。</p>
 <ul>
 <li>
@@ -596,7 +597,26 @@ fn main() -&gt; i32 {
 <p>此测例 <code>fork</code> 了三个子进程，分别进行测例二、四、五的测试。</p>
 </li>
 </ul>
-<h3 id="fifo算法"><a class="header" href="#fifo算法">FIFO算法</a></h3>
+<h3 id="测试结果"><a class="header" href="#测试结果">测试结果</a></h3>
+<p>得到的测试结果如下表所示(缺页次数)：</p>
+<table><thead><tr><th align="center">算法</th><th align="center">测例一</th><th align="center">测例二</th><th align="center">测例三</th><th align="center">测例四</th><th align="center">测例五</th><th align="center">测例六</th><th align="center">测例七</th></tr></thead><tbody>
+<tr><td align="center">FIFO</td><td align="center">100</td><td align="center">800</td><td align="center">100</td><td align="center">1884</td><td align="center">2684</td><td align="center">5084</td><td align="center">3272</td></tr>
+<tr><td align="center">Clock</td><td align="center">100</td><td align="center">800</td><td align="center">100</td><td align="center">638</td><td align="center">800</td><td align="center">2400</td><td align="center">3214</td></tr>
+<tr><td align="center">改进Clock</td><td align="center">100</td><td align="center">785</td><td align="center">100</td><td align="center">633</td><td align="center">781</td><td align="center">2404</td><td align="center">3261</td></tr>
+<tr><td align="center">缺页率(PFF_T=100000)</td><td align="center">200</td><td align="center">800</td><td align="center">200</td><td align="center">7614</td><td align="center">975</td><td align="center">7301</td><td align="center">10418</td></tr>
+<tr><td align="center">缺页率(PFF_T=200000)</td><td align="center">100</td><td align="center">800</td><td align="center">200</td><td align="center">5999</td><td align="center">818</td><td align="center">3019</td><td align="center">失败</td></tr>
+<tr><td align="center">工作集(5)</td><td align="center">200</td><td align="center">800</td><td align="center">200</td><td align="center">7816</td><td align="center">800</td><td align="center">5562</td><td align="center">11358</td></tr>
+<tr><td align="center">工作集(20)</td><td align="center">100</td><td align="center">800</td><td align="center">100</td><td align="center">6934</td><td align="center">800</td><td align="center">3589</td><td align="center">9789</td></tr>
+</tbody></table>
+<p>可以从非常多的角度去分析这个表格：</p>
+<ul>
+<li>首先，测例一二三由于访存非常规律所以得到的缺页次数基本固定且可人为计算</li>
+<li>对于全随机的测例四，FIFO和全局算法的表现都并不好，而两个Clock算法表现较好，甚至比顺序访存表现更好</li>
+<li>比较全随机测例四和有一定局部性的随机测例五，局部算法缺页次数增加，而全局算法缺页次数减少，说明全局算法对程序局部性更敏感也更需求</li>
+<li>对于缺页率算法而言，缺页时间间隔T设置越大则运行时工作集越大，缺页会更少，但有失败的风险，由于设置间隔过大页面释放不及时，当然可以进行补救，在算法中缺页时物理页面不足时释放上次缺页异常和这次之间不活跃的页面即可，这里只是单纯测试算法所以没有进行补救</li>
+<li>对于工作集算法而言，后面的数字代表工作集大小，工作集越大缺页越少</li>
+<li>对比测例六和测例七：FIFO缺页次数降低，因为其在测例五上表现不好，而测例七中有两个子进程使用了二和四，整体表现提升；Clock缺页次数增加，因为局部Clock算法没有考虑进程间的访存差异，访存规律一致时表现非常好，而访存不一致时表现下降；全局算法表现都有下降，因为测例七中将有局部性的随机测例五换成了全随机的测例四，导致整体缺页次数增加</li>
+</ul>
 
                     </main>
 

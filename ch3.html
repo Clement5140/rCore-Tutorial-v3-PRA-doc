@@ -166,9 +166,365 @@
                 <div id="content" class="content">
                     <main>
                         <h1 id="页面置换算法的实现"><a class="header" href="#页面置换算法的实现">页面置换算法的实现</a></h1>
+<h2 id="相关数据结构"><a class="header" href="#相关数据结构">相关数据结构</a></h2>
+<p>在 <code>frame_manager.rs</code> 中，包含了 <code>ClockQue</code>、<code>LocalFrameManager</code> 和 <code>GlobalFrameManager</code> 等协助完成页面置换算法的类，定义和作用如下：</p>
+<ul>
+<li><code>ClockQue</code>，管理 <code>Clock</code> 和改进 <code>Clock</code> 页面置换算法中的物理页面队列，在触发缺页异常时按照算法弹出下一个被置换的物理页面。<code>ppns</code> 为记录的物理页面循环队列，<code>ptr</code> 为算法当前的指针位置，类上定义了 <code>push</code> 和 <code>pop</code> 方法。</li>
+</ul>
+<pre><pre class="playground"><code class="language-rust">
+<span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>struct ClockQue {
+    ppns: Vec&lt;PhysPageNum&gt;,
+    ptr: usize,
+}
+<span class="boring">}
+</span></code></pre></pre>
+<ul>
+<li><code>LocalFrameManager</code>，局部页面置换算法的总管理器，保存使用的页面置换算法，<code>FIFO</code> 的队列， <code>Clock</code> 和改进 <code>Clock</code> 的队列，以及协助全局页面置换算法的 <code>global_ppns</code> 用来记录每个进程已经分配的物理页面的页号。每个 <code>MemorySet</code> 类的实例也就是每个进程的 <code>memory_set</code> 中都有一个 <code>LocalFrameManager</code> 用来进行局部页面管理，类上定义了 <code>get_next_frame</code> 和 <code>insert_frame</code> 方法，供 <code>MemorySet</code> 进行调用。</li>
+</ul>
+<pre><pre class="playground"><code class="language-rust">
+<span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub struct LocalFrameManager {
+    used_pra: PRA,
+    fifo_que: Queue&lt;PhysPageNum&gt;,
+    clock_que: ClockQue,
+    global_ppns: Vec&lt;PhysPageNum&gt;,
+}
+<span class="boring">}
+</span></code></pre></pre>
+<ul>
+<li><code>GlobalFrameManager</code>，全局页面置换算法的总管理器，保存使用的页面置换算法，以及两个算法需要用到的变量，在之后相应的算法详细描述中会进行解释。类上定义了 <code>pff_work</code>、<code>check_workingset</code> 和 <code>workingset_work</code> 方法，其中第一个为缺页率置换算法的方法，后两个为工作集置换算法的方法。</li>
+</ul>
+<pre><pre class="playground"><code class="language-rust">
+<span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub struct GlobalFrameManager {
+    used_pra: PRA,
+    t_last: usize,
+    idx: usize,
+}
+<span class="boring">}
+</span></code></pre></pre>
 <h2 id="局部页面置换算法"><a class="header" href="#局部页面置换算法">局部页面置换算法</a></h2>
 <h3 id="fifo页面置换算法"><a class="header" href="#fifo页面置换算法">FIFO页面置换算法</a></h3>
-<p>FIFO页面置换算法实现非常简单，只需要给每一个用户程序记录一个物理页面队列即可，在用户访问申请的内存并触发缺页异常分配物理页面时将对应PPN加入队列的队尾，在需要换出物理页面时将队首的物理页面换出即可。</p>
+<p>FIFO页面置换算法实现非常简单，只需要给每一个用户程序记录一个物理页面队列即可，在用户访问申请的内存并触发缺页异常分配物理页面时将对应PPN加入队列的队尾，在需要换出物理页面时将队首的物理页面换出。</p>
+<pre><pre class="playground"><code class="language-rust">
+<span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>// LocalFrameManager 的 get_next_frame 方法中
+match self.used_pra {
+    PRA::FIFO =&gt; {
+        self.fifo_que.pop()
+    }
+    ...
+}
+
+// LocalFrameManager 的 insert_frame 方法中
+match self.used_pra {
+    PRA::FIFO =&gt; {
+        self.fifo_que.push(ppn)
+    }
+    ...
+}
+<span class="boring">}
+</span></code></pre></pre>
+<h3 id="clock页面置换算法"><a class="header" href="#clock页面置换算法">Clock页面置换算法</a></h3>
+<p>与FIFO页面置换算法相同，在 <code>LocalFrameManager</code> 中插入和获取置换的页面，但使用的是 <code>clock_que</code> 。</p>
+<pre><pre class="playground"><code class="language-rust">
+<span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>// LocalFrameManager 的 get_next_frame 方法中
+match self.used_pra {
+    PRA::Clock =&gt; {
+        self.clock_que.pop(page_table)
+    }
+    ...
+}
+
+// LocalFrameManager 的 insert_frame 方法中
+match self.used_pra {
+    PRA::Clock | PRA::ClockImproved =&gt; {
+        self.clock_que.push(ppn)
+    }
+    ...
+}
+<span class="boring">}
+</span></code></pre></pre>
+<p>在 <code>ClockQue</code> 中，<code>push</code> 和 <code>pop</code> 如下：</p>
+<pre><pre class="playground"><code class="language-rust">
+<span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub fn push(&amp;mut self, ppn: PhysPageNum) {
+    self.ppns.push(ppn);
+}
+
+pub fn pop(&amp;mut self, page_table: &amp;mut PageTable) -&gt; Option&lt;PhysPageNum&gt; {
+    loop {
+        let ppn = self.ppns[self.ptr];
+        let vpn = *(P2V_MAP.exclusive_access().get(&amp;ppn).unwrap());
+        let pte = page_table.find_pte(vpn).unwrap();
+        if !pte.is_valid() {
+            panic!(&quot;[kernel] PAGE FAULT: (local) Pte not valid in PRA Clock pop.&quot;);
+        }
+        if !pte.accessed() {
+            self.ppns.remove(self.ptr);
+            if self.ptr == self.ppns.len() {
+                self.ptr = 0;
+            }
+            return Some(ppn);
+        }
+        pte.change_access();
+        println!(&quot;[kernel] PAGE FAULT: (local) Changing pte access, ppn: {}.&quot;, ppn.0);
+        if pte.accessed() {
+            panic!(&quot;[kernel] PAGE FAULT: (local) Pte access did not change.&quot;);
+        }
+        self.inc();
+    }
+}
+<span class="boring">}
+</span></code></pre></pre>
+<p><code>push</code> 就是简单的将新的物理页面号加入队尾，<code>pop</code> 相对复杂一些，循环寻找替换出的物理页面直到找到为止，每次循环中查看该物理页面的页表项的 <code>access</code> 位，若为 <code>0</code> 则选择该物理页面弹出，否则将其 <code>access</code> 位置零后查看循环队列的下一位。</p>
+<h3 id="改进的clock页面置换算法"><a class="header" href="#改进的clock页面置换算法">改进的Clock页面置换算法</a></h3>
+<p>改进的Clock和Clock页面置换算法相似，只有 <code>pop</code> 操作不同，改进后的如下：</p>
+<pre><pre class="playground"><code class="language-rust">
+<span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub fn pop_improved(&amp;mut self, page_table: &amp;mut PageTable) -&gt; Option&lt;PhysPageNum&gt; {
+    loop {
+        let ppn = self.ppns[self.ptr];
+        let vpn = *(P2V_MAP.exclusive_access().get(&amp;ppn).unwrap());
+        let pte = page_table.find_pte(vpn).unwrap();
+        if !pte.is_valid() {
+            panic!(&quot;[kernel] PAGE FAULT: (local) Pte not valid in PRA Clock pop.&quot;);
+        }
+        if !pte.accessed() &amp;&amp; !pte.dirty() {
+            self.ppns.remove(self.ptr);
+            if self.ptr == self.ppns.len() {
+                self.ptr = 0;
+            }
+            return Some(ppn);
+        }
+        if pte.accessed() {
+            pte.change_access();
+            println!(&quot;[kernel] PAGE FAULT: (local) Changing pte access, ppn: {}.&quot;, ppn.0);
+            if pte.accessed() {
+                panic!(&quot;[kernel] PAGE FAULT: (local) Pte access did not change.&quot;);
+            }
+        }
+        else {
+            pte.change_dirty();
+            println!(&quot;[kernel] PAGE FAULT: (local) Changing pte dirty, ppn: {}.&quot;, ppn.0);
+            if pte.dirty() {
+                panic!(&quot;[kernel] PAGE FAULT: (local) Pte dirty did not change.&quot;);
+            }
+        }
+        self.inc();
+    }
+}
+<span class="boring">}
+</span></code></pre></pre>
+<p>每次循环中先检查该物理页面的页表项 <code>access</code> 和 <code>dirty</code>，若都为 <code>0</code> 则选择该页面弹出，否则若 <code>access</code> 为 <code>1</code>，则将其置零并循环下一位，若 <code>access</code> 为 <code>0</code> 而 <code>dirty</code> 为 <code>1</code>，则将 <code>dirty</code> 置零并循环下一位，直到找到为止。</p>
+<h2 id="全局页面置换算法"><a class="header" href="#全局页面置换算法">全局页面置换算法</a></h2>
+<h3 id="缺页率置换算法"><a class="header" href="#缺页率置换算法">缺页率置换算法</a></h3>
+<p>缺页率算法设置一个常数 <code>PFF_T</code> 表示两次缺页异常间隔的阈值。具体实现时，如果两次缺页异常的间隔大于这个阈值，则换出所有在这段时间内不活跃的物理页面，如果小于等于这个阈值，则将所有页面的访问位清除以便下次判断每个页面是否在这次和下次之间的时间内活跃。</p>
+<p>此算法的实现在 <code>GlobalFrameManager</code> 的 <code>pff_work</code> 方法中，首先是 <code>t_current-t_last &gt; PFF_T</code> 的情况，需要换出这段时间内不活跃的物理页面：</p>
+<pre><pre class="playground"><code class="language-rust">
+<span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>for i in 0..task_manager.ready_queue.len() {
+    let process = task_manager.ready_queue[i].process.upgrade().unwrap();
+    let mut pcb = process.inner_exclusive_access();
+    let token = pcb.get_user_token();
+    let memory_set = &amp;mut pcb.memory_set;
+    for j in (0..memory_set.frame_manager.global_ppns.len()).rev() {
+        let ppn = memory_set.frame_manager.global_ppns[j];
+        ...
+    }
+}
+for i in (0..memory_set_.frame_manager.global_ppns.len()).rev() {
+    let ppn = memory_set_.frame_manager.global_ppns[i];
+    ...
+}
+<span class="boring">}
+</span></code></pre></pre>
+<p>需要换出所有任务的不活跃物理页面，第一个循环是处理在 <code>task_manager</code> 中的任务，第二个循环是处理当前触发缺页异常的任务，上面代码省略号中，获取到物理页面( <code>ppn</code> )后进行如下处理：</p>
+<pre><pre class="playground"><code class="language-rust">
+<span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>let data_old = ppn.get_bytes_array();
+let mut p2v_map = P2V_MAP.exclusive_access();
+let vpn = *(p2v_map.get(&amp;ppn).unwrap());
+if let Some(pte) = memory_set.page_table.translate(vpn) {
+    if pte.is_valid() &amp;&amp; !pte.accessed() {
+        IDE_MANAGER.exclusive_access().swap_in(token, vpn, data_old);
+        for k in 0..memory_set.areas.len() {
+            if vpn &gt;= memory_set.areas[k].vpn_range.get_start() &amp;&amp; vpn &lt; memory_set.areas[k].vpn_range.get_end() {
+                memory_set.areas[k].unmap_one(&amp;mut memory_set.page_table, vpn);
+            }
+        }
+        p2v_map.remove(&amp;ppn);
+        memory_set.frame_manager.global_ppns.remove(j);
+        println!(&quot;[kernel] PAGE FAULT: (global) Swapping out ppn:{} frame.&quot;, ppn.0);
+    }
+}
+<span class="boring">}
+</span></code></pre></pre>
+<p>查看该物理页面的页表项，若 <code>access</code> 位为 <code>0</code> 则需要换出，将其保存到磁盘内，然后取消 <code>memory_set</code> 中该物理页面的映射。</p>
+<p>然后是 <code>t_current-t_last &lt;= PFF_T</code> 的情况，则将所有物理页面的访问位清除：</p>
+<pre><pre class="playground"><code class="language-rust">
+<span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>for i in 0..task_manager.ready_queue.len() {
+    let process = task_manager.ready_queue[i].process.upgrade().unwrap();
+    let mut pcb = process.inner_exclusive_access();
+    let memory_set = &amp;mut pcb.memory_set;
+    for j in 0..memory_set.frame_manager.global_ppns.len() {
+        let ppn = memory_set.frame_manager.global_ppns[j];
+        ...
+    }
+}
+for i in 0..memory_set_.frame_manager.global_ppns.len() {
+    let ppn = memory_set_.frame_manager.global_ppns[i];
+    ...
+}
+<span class="boring">}
+</span></code></pre></pre>
+<p>和上述过程类似，获取到物理页面( <code>ppn</code> )后进行如下处理：</p>
+<pre><pre class="playground"><code class="language-rust">
+<span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>let p2v_map = P2V_MAP.exclusive_access();
+let vpn = *(p2v_map.get(&amp;ppn).unwrap());
+if let Some(pte) = memory_set.page_table.find_pte(vpn) {
+    if pte.is_valid() &amp;&amp; pte.accessed() {
+        println!(&quot;[kernel] PAGE FAULT: (global) Changing pte access, ppn: {} pte.ppn: {}.&quot;, ppn.0, pte.ppn().0);
+        pte.change_access();
+    }
+}
+<span class="boring">}
+</span></code></pre></pre>
+<p>将该物理页面的页表项的 <code>access</code> 位置零。
+上一章缺页异常的全局页面置换算法的预处理会调用该 <code>pff_work</code> 方法，参数 <code>PFF_T</code> 设置合理的情况下，在处理后保证有空余的物理页面。</p>
+<h3 id="工作集置换算法"><a class="header" href="#工作集置换算法">工作集置换算法</a></h3>
+<p>工作集置换算法相较于其他算法实现更复杂，因为操作系统无法准确获取用户程序每次访存的位置，也就无法获取准确的工作集，但我们可以通过定期时钟中断和引用位来近似得到工作集模型。</p>
+<p>例如，假设工作集大小 $\Delta$ 为最近 20000 个引用，并且每两次时钟中断之间平均会有 5000 个引用，当得到一个定时器中断时，复制并清除所有页面的引用位，发生缺页异常时可以检查当前的引用位和复制的位于内存的引用位n个位共n+1个位，这些位可以确定过去的 5000*(n+1) 次引用中该页面是否被使用过，若被使用过，这些位中至少有一位会被打开，若没有使用过，那么这些位会被关闭。至少有一位被打开的页面被视为在工作集中。</p>
+<p>具体实现中，在每次时钟中断时，先调用 <code>GlobalFrameManager</code> 的 <code>check_workingset</code> 方法，复制并清除所有用户程序的所有页面的引用位：</p>
+<pre><pre class="playground"><code class="language-rust">
+<span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>Trap::Interrupt(Interrupt::SupervisorTimer) =&gt; {
+    check_workingset();
+    set_next_trigger();
+    check_timer();
+    suspend_current_and_run_next();
+}
+<span class="boring">}
+</span></code></pre></pre>
+<p>在 <code>check_workingset</code> 的实现中，遍历所有用户程序分配的物理页面，获取其物理页号：</p>
+<pre><pre class="playground"><code class="language-rust">
+<span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>let mut pte_recorder = PTE_RECORDER.exclusive_access();
+pte_recorder[self.idx].clear();
+let task_manager = TASK_MANAGER.exclusive_access();
+for i in 0..task_manager.ready_queue.len() {
+    let process = task_manager.ready_queue[i].process.upgrade().unwrap();
+    let mut pcb = process.inner_exclusive_access();
+    let token = pcb.get_user_token();
+    let memory_set = &amp;mut pcb.memory_set;
+    for j in (0..memory_set.frame_manager.global_ppns.len()).rev() {
+        let ppn = memory_set.frame_manager.global_ppns[j];
+        ...
+    }
+}
+
+let process = current_process();
+let mut pcb = process.inner_exclusive_access();
+let token = pcb.get_user_token();
+let memory_set = &amp;mut pcb.memory_set;
+for j in (0..memory_set.frame_manager.global_ppns.len()).rev() {
+    let ppn = memory_set.frame_manager.global_ppns[j];
+    ...
+}
+self.idx = (self.idx + 1) % WORKINGSET_DELTA_NUM;
+<span class="boring">}
+</span></code></pre></pre>
+<p>其中，<code>WORKINGSET_DELTA_NUM</code> 为近似工作集算法时设置的时钟中断数n，在最近n次时钟中断时都要复制记录下所有页面的引用位，<code>PTE_RECORDER</code> 为记录引用位的一个映射循环队列，<code>idx</code> 为当前循环指标。上面代码省略号中，获取到物理页面的页号后，进行以下处理：</p>
+<pre><pre class="playground"><code class="language-rust">
+<span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>let p2v_map = P2V_MAP.exclusive_access();
+let vpn = *(p2v_map.get(&amp;ppn).unwrap());
+if let Some(pte) = memory_set.page_table.find_pte(vpn) {
+    if pte.is_valid() {
+        pte_recorder[self.idx].insert((token, vpn), pte.accessed());
+        if pte.accessed() {
+            println!(&quot;[kernel] Supervisor Timer: Changing pte access, ppn: {} pte.ppn: {}.&quot;, ppn.0, pte.ppn().0);
+            pte.change_access();
+        }
+    }
+}
+<span class="boring">}
+</span></code></pre></pre>
+<p>先查询对应的虚拟页号，若页表项有效，则建立用户程序token和虚拟页号到当前页表项 <code>access</code> 位的映射，相当于将其记录下来，然后清除该引用位。</p>
+<p>然后是 <code>workingset_work</code> 方法，同样地，先遍历所有用户程序分配的物理页面，获取其物理页号：</p>
+<pre><pre class="playground"><code class="language-rust">
+<span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>for i in 0..task_manager.ready_queue.len() {
+    let process = task_manager.ready_queue[i].process.upgrade().unwrap();
+    let mut pcb = process.inner_exclusive_access();
+    let token = pcb.get_user_token();
+    let memory_set = &amp;mut pcb.memory_set;
+    for j in (0..memory_set.frame_manager.global_ppns.len()).rev() {
+        let ppn = memory_set.frame_manager.global_ppns[j];
+        ...
+    }
+}
+for i in (0..memory_set_.frame_manager.global_ppns.len()).rev() {
+    let ppn = memory_set_.frame_manager.global_ppns[i];
+    ...
+}
+<span class="boring">}
+</span></code></pre></pre>
+<p>然后省略号中进行同样的处理：</p>
+<pre><pre class="playground"><code class="language-rust">
+<span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>let mut p2v_map = P2V_MAP.exclusive_access();
+let vpn = *(p2v_map.get(&amp;ppn).unwrap());
+let mut flag = false;
+for k in 0..WORKINGSET_DELTA_NUM {
+    if let Some(result) = pte_recorder[k].get(&amp;(token, vpn)) {
+        if *result == true {
+            flag = true;
+            break;
+        }
+    }
+}
+if let Some(pte) = memory_set.page_table.find_pte(vpn) {
+    if pte.is_valid() &amp;&amp; pte.accessed() {
+        flag = true;
+    }
+}
+if !flag {
+    let data_old = ppn.get_bytes_array();
+    IDE_MANAGER.exclusive_access().swap_in(token, vpn, data_old);
+    for k in 0..memory_set.areas.len() {
+        if vpn &gt;= memory_set.areas[k].vpn_range.get_start() &amp;&amp; vpn &lt; memory_set.areas[k].vpn_range.get_end() {
+            memory_set.areas[k].unmap_one(&amp;mut memory_set.page_table, vpn);
+        }
+    }
+    p2v_map.remove(&amp;ppn);
+    memory_set.frame_manager.global_ppns.remove(j);
+    println!(&quot;[kernel] PAGE FAULT: Swapping out ppn:{} frame.&quot;, ppn.0);
+}
+<span class="boring">}
+</span></code></pre></pre>
+<p>先查询对应的虚拟页号，然后在 <code>PTE_RECORDER</code> 记录中查询之前 <code>WORKINGSET_DELTA_NUM</code> 个时钟中断中以及这一次时钟中断中是否有访问位为1，也就是 <code>flag</code> 的含义，若这些时钟中断之中都没有访问位为1，则该物理页面需要被换出，通过 <code>IDE_MANAGER</code> 将其数据保存至磁盘中，然后取消其在 <code>memeory_set</code> 中的映射即可。</p>
+<p>同缺页率算法一样，上一章缺页异常的全局页面置换算法的预处理会调用该方法，在参数 <code>WORKINGSET_DELTA_NUM</code> 设置合理的情况下，在处理后保证有空余的物理页面。</p>
 
                     </main>
 
