@@ -53,6 +53,7 @@
 │       ├── mm
 │       │   ├── address.rs
 │       │   ├── frame_allocator.rs
+│       │   ├── frame_manager.rs  新增，页面管理相关的数据结构
 │       │   ├── heap_allocator.rs
 │       │   ├── memory_set.rs   修改
 │       │   ├── mod.rs
@@ -130,12 +131,19 @@
         │   ├── sync_sem.rs
         │   ├── test1_sleep1.rs
         │   ├── test1_sleep.rs
-        │   ├── test2_mmap0.rs  测试页面置换机制
+        │   ├── test2_mmap0.rs  简单测试页面置换机制
         │   ├── test2_mmap1.rs
         │   ├── test2_mmap2.rs
         │   ├── test2_mmap3.rs
         │   ├── test2_unmap2.rs
         │   ├── test2_unmap.rs
+        │   ├── test1.rs  测例1-7测试各种页面置换算法的正确性和效率
+        │   ├── test2.rs
+        │   ├── test3.rs
+        │   ├── test4.rs
+        │   ├── test5.rs
+        │   ├── test6.rs
+        │   ├── test7.rs
         │   ├── test_condvar.rs
         │   ├── threads_arg.rs
         │   ├── threads.rs

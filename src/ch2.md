@@ -97,7 +97,9 @@ pub struct IdeManager {
 * 相应的物理页帧不在内存中(页表项非空，但存在标志位=0，比如在 swap 分区或磁盘文件上)；
 * 不满足访问权限(此时页表项 V 标志=1，但低权限的程序试图访问高权限的地址空间，或者有程序试图写只读页面).
 
-接下来介绍缺页异常处理函数`do_pgfault`的实现：
+### 页异常处理函数的实现
+
+接下来介绍缺页异常处理函数 `do_pgfault` 的实现：
 
 ```rust
 pub fn do_pgfault(addr: usize, flag: usize) -> bool
@@ -126,9 +128,30 @@ if let Some(pte) = memory_set.page_table.translate(vpn) {
 }
 ```
 
-接下来在当前用户程序的`memory_set`的`areas`中查看是否包含触发异常的`vpn`，若不包含则说明该用户程序访问了一个无效的虚拟地址，直接返回错误即可，若包含则说明该用户程序申请了包含该虚拟地址的内存，但内核还未为其分配物理页面，或分配后已经被交换到磁盘中暂时失效了。
+然后分为两个部分，局部页面置换算法和全局页面置换算法：
 
-此前，当用户在`memory_set`中申请一段内存时，若可以先不分配则不分配，只将其记录到`areas`当中：
+```rust
+if PRA_IS_LOCAL {
+    local_pra(memory_set, vpn, token)
+}
+else {
+    global_pra(memory_set, vpn, token)
+}
+```
+
+### 局部页面置换部分的处理
+
+在局部页面置换算法的处理中，接下来在当前用户程序的 `memory_set` 的 `areas` 中查看是否包含触发异常的 `vpn` ，若不包含则说明该用户程序访问了一个无效的虚拟地址，直接返回错误即可，若包含则说明该用户程序申请了包含该虚拟地址的内存，但内核还未为其分配物理页面，或分配后已经被交换到磁盘中暂时失效了。
+
+```rust
+for i in 0..memory_set.areas.len() {
+    if vpn >= memory_set.areas[i].vpn_range.get_start() && vpn < memory_set.areas[i].vpn_range.get_end() {
+        ...
+    }
+}
+```
+
+此前，当用户在 `memory_set` 中申请一段内存时，若可以先不分配则不分配，只将其记录到 `areas` 当中：
 
 ```rust
 // memory_set的成员函数
@@ -141,7 +164,7 @@ fn push(&mut self, mut map_area: MapArea, data: Option<&[u8]>) {
 }
 ```
 
-回到缺页异常的处理，若触发异常的`vpn`包含在`memory_set`的`areas`中，则说明内核还未为其分配物理页面，或分配后已经被交换到磁盘中暂时失效了，不管怎样我们都需要分配一个物理页面给他使用，此时需要查看物理页面是否足够：
+回到缺页异常的处理，若触发异常的 `vpn` 包含在 `memory_set` 的 `areas` 中，则说明内核还未为其分配物理页面，或分配后已经被交换到磁盘中暂时失效了，不管怎样我们都需要分配一个物理页面给他使用，此时需要查看物理页面是否足够：
 
 ```rust
 if let Some(frame) = frame_alloc() { // enough frame
@@ -150,7 +173,7 @@ if let Some(frame) = frame_alloc() { // enough frame
     println!("[kernel] PAGE FAULT: Frame enough, allocating ppn:{} frame.", ppn.0);
 }
 else {  // frame not enough, need to swap out a frame
-    ppn = memory_set.frame_que.pop().unwrap();
+    ppn = memory_set.get_next_frame().unwrap();
     let data_old = ppn.get_bytes_array();
     let mut p2v_map = P2V_MAP.exclusive_access();
     let vpn_old = *(p2v_map.get(&ppn).unwrap());
@@ -161,14 +184,14 @@ else {  // frame not enough, need to swap out a frame
         }
     }
     p2v_map.remove(&ppn);
-    println!("[kernel] PAGE FAULT: Frame not enough, swapping out ppn:{} frame.", ppn.0);
+    println!("[kernel] PAGE FAULT: (local) Frame not enough, swapping out ppn:{} frame.", ppn.0);
 
     let frame = frame_alloc().unwrap();
     memory_set.areas[i].data_frames.insert(vpn, frame);
 }
 ```
 
-主要考虑物理页面不足需要换出的情况，`ppn = memory_set.frame_que.pop().unwrap()`获得要换出的物理页面对应的PPN，根据不同算法这里获得的页面不同，然后将该页面的数据复制到磁盘中，并且将其从页表中删除，最后再将该物理页面分配给触发异常的虚拟地址。
+物理页面足够时直接分配，主要考虑物理页面不足需要换出的情况，`ppn = memory_set.get_next_frame().unwrap()` 获得要换出的物理页面对应的PPN，根据不同算法这里获得的页面不同，然后将该页面的数据复制到磁盘中，并且将其从页表中删除，最后再将该物理页面分配给触发异常的虚拟地址。
 
 如果该虚拟地址之前被分配过物理页面并被换出，我们需要将原来的数据拿出来放到新分配的物理页面中：
 
@@ -176,7 +199,7 @@ else {  // frame not enough, need to swap out a frame
 if ide_manager.check(token, vpn) {
     let data = ppn.get_bytes_array();
     ide_manager.swap_out(token, vpn, data);
-    println!("[kernel] PAGE FAULT: Swapping in vpn:{} ppn:{} frame.", vpn.0, ppn.0);
+    println!("[kernel] PAGE FAULT: (local) Swapping in vpn:{} ppn:{} frame.", vpn.0, ppn.0);
 }
 ```
 
@@ -184,7 +207,7 @@ if ide_manager.check(token, vpn) {
 
 ```rust
 if !frame_check() {
-    let ppn = memory_set.frame_que.pop().unwrap();
+    let ppn = memory_set.get_next_frame().unwrap();
     let data_old = ppn.get_bytes_array();
     let mut p2v_map = P2V_MAP.exclusive_access();
     let vpn_old = *(p2v_map.get(&ppn).unwrap());
@@ -195,14 +218,54 @@ if !frame_check() {
         }
     }
     p2v_map.remove(&ppn);
-    println!("[kernel] PAGE FAULT: Swapping out ppn:{} frame.", ppn.0);
+    println!("[kernel] PAGE FAULT: (local) Swapping out ppn:{} frame.", ppn.0);
 }
-println!("[kernel] PAGE FAULT: Mapping vpn:{} to ppn:{}.", vpn.0, ppn.0);
+println!("[kernel] PAGE FAULT: (local) Mapping vpn:{} to ppn:{}.", vpn.0, ppn.0);
 memory_set.page_table.map(vpn, ppn, memory_set.areas[i].get_flag_bits());
 P2V_MAP.exclusive_access().insert(ppn, vpn);
-memory_set.frame_que.push(ppn);
+memory_set.insert_frame(ppn);
 ```
 
 由于建立映射时页表可能需要新的物理页面，所以我们先检查一下物理页面是否还有剩余，若没有则提前换出一个，保证页表可以正常工作。
+
+### 全局页面置换部分的处理
+
+一开始和局部页面置换部分的处理相同，先在当前用户程序的 `memory_set` 的 `areas` 中查看是否包含触发异常的 `vpn` ，若包含则进行进一步处理。
+
+```rust
+for i in 0..memory_set.areas.len() {
+    if vpn >= memory_set.areas[i].vpn_range.get_start() && vpn < memory_set.areas[i].vpn_range.get_end() {
+        ...
+    }
+}
+```
+
+首先进行全局页面置换算法的预处理，两个页面置换算法的处理是不同的，在下一章中会详细讲解，如下：
+
+```rust
+GFM.exclusive_access().work(memory_set, token);
+```
+
+由于是全局页面置换算法，参数设置合理的情况下，这时保证一定有空余的物理页面，直接分配即可。同样地，如果该虚拟地址之前被分配过物理页面并被换出，我们需要将原来的数据拿出来放到新分配的物理页面中：
+
+```rust
+let frame = frame_alloc().unwrap();
+ppn = frame.ppn;
+memory_set.areas[i].data_frames.insert(vpn, frame);
+
+if IDE_MANAGER.exclusive_access().check(token, vpn) {
+    let data = ppn.get_bytes_array();
+    IDE_MANAGER.exclusive_access().swap_out(token, vpn, data);
+    println!("[kernel] PAGE FAULT: (global) Swapping in vpn:{} ppn:{} frame.", vpn.0, ppn.0);
+}
+```
+
+同样地，最后建立新的映射：
+
+```rust
+memory_set.page_table.map(vpn, ppn, memory_set.areas[i].get_flag_bits());
+P2V_MAP.exclusive_access().insert(ppn, vpn);
+memory_set.insert_frame(ppn);
+```
 
 到这里缺页异常就处理完毕了，中断返回后重新执行该指令时可以正常执行。
